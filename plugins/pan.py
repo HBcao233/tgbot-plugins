@@ -3,10 +3,17 @@ import traceback
 from telegram import (
   InputMediaPhoto,
   InputMediaVideo,
-  ReplyParameters,
 )
 from plugin import handler
 from util.log import logger
+
+
+prefix = {
+  'photo': 'p_',
+  'video': 'v_',
+  'document': 'd_',
+  'audio': 'a_',
+}
 
 
 @handler('_')
@@ -21,30 +28,21 @@ async def pan(update, context, *_args, **_kwargs):
     context.bot_data['media_group'][message.media_group_id].append(message)
     return
   
+  code = None
   if getattr(message, 'photo', None):
-      await update.message.reply_text(
-          f'<code>p_{message.photo[-1].file_id}</code>', 
-          reply_to_message_id=update.message.message_id,
-          parse_mode='HTML',
-      )
+    code = prefix['photo'] + str(message.photo[-1].file_id)
   if getattr(message, 'video', None):
-      await update.message.reply_text(
-          f'<code>vi_{message.video.file_id}</code>', 
-          reply_to_message_id=update.message.message_id,
-          parse_mode='HTML',
-      )
+    code = prefix['video'] + str(message.video.file_id)
   if getattr(message, 'document', None):
-      await update.message.reply_text(
-          f'<code>d_{message.document.file_id}</code>', 
-          reply_to_message_id=update.message.message_id,
-          parse_mode='HTML',
-      )
+    code = prefix['document'] + str(message.document.file_id)
   if getattr(message, 'audio', None):
-      await update.message.reply_text(
-          f'<code>au_{message.audio.file_id}</code>', 
-          reply_to_message_id=update.message.message_id,
-          parse_mode='HTML',
-      )
+    code = prefix['audio'] + str(message.audio.file_id)
+  if code:
+    await update.message.reply_text(
+      f'<code>{code}</code>', 
+      reply_to_message_id=update.message.message_id,
+      parse_mode='HTML',
+    )
 
 
 async def pan_timer(context):
@@ -53,9 +51,9 @@ async def pan_timer(context):
   res = []
   for m in ms:
     if m.photo:
-      res.append("p_" + m.photo[-1].file_id)
+      res.append(prefix['photo'] + m.photo[-1].file_id)
     elif m.video:
-      res.append("vi_" + m.video.file_id)
+      res.append(prefix['video'] + m.video.file_id)
   res = list(map(lambda x : "<code>" + x + "</code>", res))
   await context.bot.sendMessage(
       chat_id=ms[0].chat.id,
@@ -67,37 +65,70 @@ async def pan_timer(context):
     del context.bot_data['media_group'][context.job.data]
     
 
-_file_pattern = r"(vi_|p_|d_|au_)([a-zA-Z0-9-_]+)"
+caption = 'This message will delete in 1 hour'
+_file_pattern = (
+  r"(" +
+  prefix['photo'] + '|' +
+  prefix['video'] + '|' +
+  prefix['document'] + '|' +
+  prefix['audio'] +
+  r")" +
+  "([a-zA-Z0-9-_]+)" 
+)
 @handler("file", private_pattern=_file_pattern)
 async def file(update, context, text):
-    bot = context.bot
-    r = re.findall(_file_pattern, text)
-    # r = list(map(lambda x: list(filter(lambda y: y!='', x)), r))
-    logger.info(r)
+  message = update.message
+  bot = context.bot
+  r = re.findall(_file_pattern, text)
+  # logger.info(r)
 
-    ms = []
-    async def _s():
-      nonlocal ms, bot
-      if len(ms) > 0:
-        await bot.sendMediaGroup(chat_id=update.message.chat_id, media=ms, reply_parameters=ReplyParameters(message_id=update.message.message_id, chat_id=update.message.chat_id))
-        ms = []
+  ms = []
+  async def _s():
+    nonlocal ms, bot
+    if len(ms) > 0:
+      with ms[0]._unfrozen():
+        ms[0].caption = caption
+      m = await bot.sendMediaGroup(chat_id=message.chat_id, media=ms, reply_to_message_id=message.message_id)
+      context.job_queue.run_once(del_msgs, 3600, data=m)
+      ms = []
+  
+  for i in r:
+    try:
+      if i[0] == prefix['photo']:
+        ms.append(InputMediaPhoto(media=i[1]))
+      elif i[0] == prefix['video']:
+        ms.append(InputMediaVideo(media=i[1]))
+      elif i[0] == prefix['document']:
+        await _s()
+        m = await bot.sendDocument(
+          chat_id=message.chat_id, 
+          document=i[1], 
+          reply_to_message_id=message.message_id,
+          caption=caption,
+        )
+        context.job_queue.run_once(del_msgs, 3600, data=m)
+      elif i[0] == prefix['audio']:
+        await _s()
+        await bot.sendAudio(chat_id=message.chat_id, audio=i[1], reply_to_message_id=message.message_id)
+    except:
+      logger.error(traceback.format_exc())
+      await bot.sendMessage(chat_id=message.chat.id, text="Error, maybe non-existent", reply_to_message_id=message.message_id)
+  await _s()
     
-    for i in r:
-      try:
-        if i[0] == 'p_':
-          ms.append(InputMediaPhoto(media=i[1]))
-          # await bot.sendPhoto(chat_id=update.message.chat_id, photo=i[1], reply_to_message_id=update.message.message_id)
-        elif i[0] == 'vi_':
-          ms.append(InputMediaVideo(media=i[1]))
-          # await bot.sendVideo(chat_id=update.message.chat_id, video=i[1], reply_to_message_id=update.message.message_id)
-        elif i[0] == 'd_':
-          await _s()
-          await bot.sendDocument(chat_id=update.message.chat_id, document=i[1], reply_to_message_id=update.message.message_id)
-        elif i[0] == 'au_':
-          await _s()
-          await bot.sendAudio(chat_id=update.message.chat_id, audio=i[1], reply_to_message_id=update.message.message_id)
-      except Exception:
-        logger.error(traceback.print_exc())
-        await bot.sendMessage(chat_id=update.message.chat.id, text="Error, maybe non-existent", reply_to_message_id=update.message.message_id)
-    await _s()
     
+async def del_msgs(context):
+  logger.info(context.job.data)
+  m = context.job.data
+  if not hasattr(m, "__iter__"):
+    m = [m]
+  for i in m:
+    try:
+      await context.bot.delete_message(
+        chat_id=i.chat.id,
+        message_id=i.message_id,
+      )
+    except:
+      e = traceback.format_exc()
+      if 'Message to delete not found' not in e:
+        logger.warning(e)
+        
