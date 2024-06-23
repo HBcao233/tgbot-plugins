@@ -61,6 +61,10 @@ async def _list(update, context, text):
   
 @handler('_')
 async def _(update, context, text, *_args, **_kwargs):
+  if text is None:
+    text = getattr(update.message, 'caption', None)
+  if text is None:
+    return
   data = util.Data('keywords')
   ms = []
   for i in data.keys():
